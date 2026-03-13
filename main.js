@@ -1,5 +1,267 @@
 const fs = require("fs");
 
+// =====================================================
+// --------------------   Helpers   --------------------
+// =====================================================
+
+function parse12HourTime(timeStr) {
+  if (typeof timeStr !== "string") return 0;
+
+  const cleaned = timeStr.trim().toLowerCase().replace(/\./g, "");
+  const parts = cleaned.split(/\s+/);
+  if (parts.length !== 2) return 0;
+
+  const timePart = parts[0];
+  const period = parts[1];
+  const t = timePart.split(":");
+  if (t.length !== 3) return 0;
+
+  let hour = parseInt(t[0], 10);
+  const minute = parseInt(t[1], 10);
+  const second = parseInt(t[2], 10);
+
+  if (
+    Number.isNaN(hour) ||
+    Number.isNaN(minute) ||
+    Number.isNaN(second) ||
+    hour < 1 ||
+    hour > 12 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return 0;
+  }
+
+  if (period === "am") {
+    if (hour === 12) hour = 0;
+  } else if (period === "pm") {
+    if (hour !== 12) hour += 12;
+  } else {
+    return 0;
+  }
+
+  return hour * 3600 + minute * 60 + second;
+}
+
+function timeToSeconds(timeStr) {
+  if (typeof timeStr !== "string") return 0;
+
+  const t = timeStr.trim().split(":");
+  if (t.length !== 3) return 0;
+
+  const hour = parseInt(t[0], 10);
+  const minute = parseInt(t[1], 10);
+  const second = parseInt(t[2], 10);
+
+  if (
+    Number.isNaN(hour) ||
+    Number.isNaN(minute) ||
+    Number.isNaN(second) ||
+    hour < 0 ||
+    minute < 0 ||
+    minute > 59 ||
+    second < 0 ||
+    second > 59
+  ) {
+    return 0;
+  }
+
+  return hour * 3600 + minute * 60 + second;
+}
+
+function secondsToTime(totalSeconds) {
+  totalSeconds = Math.max(0, Math.floor(totalSeconds));
+
+  const hours = Math.floor(totalSeconds / 3600);
+  const minutes = Math.floor((totalSeconds % 3600) / 60);
+  const seconds = totalSeconds % 60;
+
+  return (
+    hours +
+    ":" +
+    String(minutes).padStart(2, "0") +
+    ":" +
+    String(seconds).padStart(2, "0")
+  );
+}
+
+function normalizeMonth(month) {
+  const parsed = parseInt(month, 10);
+  if (Number.isNaN(parsed) || parsed < 1 || parsed > 12) return "";
+  return String(parsed);
+}
+
+function getMonthFromDate(dateStr) {
+  if (typeof dateStr !== "string") return "";
+  const parts = dateStr.trim().split("-");
+  if (parts.length !== 3) return "";
+  return normalizeMonth(parts[1]);
+}
+
+function isEidDate(dateStr) {
+  if (typeof dateStr !== "string") return false;
+
+  const parts = dateStr.trim().split("-");
+  if (parts.length !== 3) return false;
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  return year === 2025 && month === 4 && day >= 10 && day <= 30;
+}
+
+function readAllNonEmptyLines(textFile) {
+  try {
+    const fileData = fs.readFileSync(textFile, { encoding: "utf8", flag: "r" });
+    return fileData.split(/\r?\n/).filter((line) => line.trim() !== "");
+  } catch (e) {
+    return [];
+  }
+}
+
+function readLines(textFile) {
+  const lines = readAllNonEmptyLines(textFile);
+  if (lines.length === 0) return [];
+  return lines.slice(1);
+}
+
+function parseShiftLine(line) {
+  const cols = String(line).split(",");
+  return {
+    driverID: (cols[0] || "").trim(),
+    driverName: (cols[1] || "").trim(),
+    date: (cols[2] || "").trim(),
+    startTime: (cols[3] || "").trim(),
+    endTime: (cols[4] || "").trim(),
+    shiftDuration: (cols[5] || "").trim(),
+    idleTime: (cols[6] || "").trim(),
+    activeTime: (cols[7] || "").trim(),
+    metQuota: String(cols[8]).trim().toLowerCase() === "true",
+    hasBonus: String(cols[9]).trim().toLowerCase() === "true",
+  };
+}
+
+function shiftObjToLine(record) {
+  return [
+    record.driverID,
+    record.driverName,
+    record.date,
+    record.startTime,
+    record.endTime,
+    record.shiftDuration,
+    record.idleTime,
+    record.activeTime,
+    String(record.metQuota),
+    String(record.hasBonus),
+  ].join(",");
+}
+
+function readHeader(textFile) {
+  const lines = readAllNonEmptyLines(textFile);
+  if (lines.length === 0) {
+    return "DriverID,DriverName,Date,StartTime,EndTime,ShiftDuration,IdleTime,ActiveTime,MetQuota,HasBonus";
+  }
+  return lines[0];
+}
+
+function writeShiftRecords(textFile, records) {
+  const header = readHeader(textFile);
+  const body = records.map(shiftObjToLine);
+  const output = [header].concat(body).join("\n");
+  fs.writeFileSync(textFile, output, { encoding: "utf8" });
+}
+
+function getDayName(dateStr) {
+  if (typeof dateStr !== "string") return "";
+
+  const parts = dateStr.trim().split("-");
+  if (parts.length !== 3) return "";
+
+  const year = parseInt(parts[0], 10);
+  const month = parseInt(parts[1], 10);
+  const day = parseInt(parts[2], 10);
+
+  if (Number.isNaN(year) || Number.isNaN(month) || Number.isNaN(day)) {
+    return "";
+  }
+
+  const names = [
+    "Sunday",
+    "Monday",
+    "Tuesday",
+    "Wednesday",
+    "Thursday",
+    "Friday",
+    "Saturday",
+  ];
+
+  return names[new Date(year, month - 1, day).getDay()];
+}
+
+function getDriverRate(rateFile, driverID) {
+  try {
+    const lines = fs
+      .readFileSync(rateFile, { encoding: "utf8", flag: "r" })
+      .split(/\r?\n/)
+      .filter((line) => line.trim() !== "");
+
+    for (let i = 0; i < lines.length; i++) {
+      const cols = lines[i].split(",");
+      if ((cols[0] || "").trim() === driverID) {
+        return {
+          driverID: (cols[0] || "").trim(),
+          dayOff: (cols[1] || "").trim(),
+          basePay: parseInt((cols[2] || "").trim(), 10) || 0,
+          tier: parseInt((cols[3] || "").trim(), 10) || 0,
+        };
+      }
+    }
+
+    return null;
+  } catch (e) {
+    return null;
+  }
+}
+
+function getShiftLengthSeconds(startTime, endTime) {
+  const startSeconds = parse12HourTime(startTime);
+  const endSeconds = parse12HourTime(endTime);
+
+  if (endSeconds >= startSeconds) {
+    return endSeconds - startSeconds;
+  }
+
+  return 24 * 3600 - startSeconds + endSeconds;
+}
+
+function getIdleInRange(startSeconds, endSeconds) {
+  const workStart = 8 * 3600;
+  const workEnd = 22 * 3600;
+
+  let idle = 0;
+
+  idle += Math.max(0, Math.min(endSeconds, workStart) - startSeconds);
+  idle += Math.max(0, endSeconds - Math.max(startSeconds, workEnd));
+
+  return idle;
+}
+
+function compareDriverIDs(idA, idB) {
+  const numA = parseInt(String(idA).replace(/\D/g, ""), 10);
+  const numB = parseInt(String(idB).replace(/\D/g, ""), 10);
+
+  if (Number.isNaN(numA) && Number.isNaN(numB)) {
+    return String(idA).localeCompare(String(idB));
+  }
+  if (Number.isNaN(numA)) return 1;
+  if (Number.isNaN(numB)) return -1;
+
+  return numA - numB;
+}
+
 // ============================================================
 // Function 1: getShiftDuration(startTime, endTime)
 // startTime: (typeof string) formatted as hh:mm:ss am or hh:mm:ss pm
